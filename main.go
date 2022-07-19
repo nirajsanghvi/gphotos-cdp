@@ -16,6 +16,9 @@ limitations under the License.
 
 // The gphotos-cdp program uses the Chrome DevTools Protocol to drive a Chrome session
 // that downloads your photos stored in Google Photos.
+
+// Modified by Niraj Sanghvi to add a new flag to allow skipping previously downloaded photos
+
 package main
 
 import (
@@ -43,13 +46,14 @@ import (
 )
 
 var (
-	nItemsFlag   = flag.Int("n", -1, "number of items to download. If negative, get them all.")
-	devFlag      = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	dlDirFlag    = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
-	startFlag    = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
-	runFlag      = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
-	verboseFlag  = flag.Bool("v", false, "be verbose")
-	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
+	nItemsFlag       = flag.Int("n", -1, "number of items to download. If negative, get them all.")
+	devFlag          = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
+	dlDirFlag        = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	startFlag        = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
+	runFlag          = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
+	verboseFlag      = flag.Bool("v", false, "be verbose")
+	headlessFlag     = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
+	skipExistingFlag = flag.Bool("skipexisting", false, "don't overwrite photos that have been downloaded previously")
 )
 
 var tick = 500 * time.Millisecond
@@ -587,6 +591,45 @@ func (s *Session) moveDownload(ctx context.Context, dlFile, location string) (st
 	return newFile, nil
 }
 
+// checkPreviouslyDownloaded determines if a directory for the given location
+// already exists and is not empty, which would indicate we've already
+// downloaded this item previously
+func (s *Session) checkPreviouslyDownloaded(ctx context.Context, location string) (bool, error) {
+	parts := strings.Split(location, "/")
+	if len(parts) < 5 {
+		return false, fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
+	}
+	checkDir := filepath.Join(s.dlDir, parts[4])
+	dir, err := os.Stat(checkDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return false, err
+		} else {
+			// confirmed directory does not exist, so we want to download this item
+			return false, nil
+		}
+	} else {
+		if dir.IsDir() {
+			files, err := ioutil.ReadDir(checkDir)
+			if err != nil {
+				return false, err
+			}
+			if len(files) > 0 {
+				// The directory exists and contains files, so we'll assume it's
+				// been successfully downloaded previously
+				return true, nil
+			} else {
+				// The directory is empty, so treat it as if the directory doesn't exist
+				return false, nil
+			}
+		} else {
+			// strange case, found the path but it's not a directory
+			// so proceed as if we didn't find it at all
+			return false, nil
+		}
+	}
+}
+
 func (s *Session) dlAndMove(ctx context.Context, location string) (string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
@@ -648,12 +691,28 @@ func (s *Session) navN(N int) func(context.Context) error {
 				break
 			}
 			prevLocation = location
-			filePath, err := s.dlAndMove(ctx, location)
-			if err != nil {
-				return err
+			skipDownload := false
+			if *skipExistingFlag {
+				previouslyDownloaded, err := s.checkPreviouslyDownloaded(ctx, location)
+				if err != nil {
+					return err
+				}
+				skipDownload = previouslyDownloaded
+				if skipDownload {
+					// TODO: Determine if we should briefly sleep here if we're navigating too quickly
+					if *verboseFlag {
+						log.Printf("Already downloaded %v", location)
+					}
+				}
 			}
-			if err := doRun(filePath); err != nil {
-				return err
+			if !skipDownload {
+				filePath, err := s.dlAndMove(ctx, location)
+				if err != nil {
+					return err
+				}
+				if err := doRun(filePath); err != nil {
+					return err
+				}
 			}
 			n++
 			if N > 0 && n >= N {
