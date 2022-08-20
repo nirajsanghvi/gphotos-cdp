@@ -713,6 +713,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 				if err := doRun(filePath); err != nil {
 					return err
 				}
+			} else {
+				// Make sure .lastdone is still updated for the pre-existing download
+				if err := markDone(s.dlDir, location); err != nil {
+					return err
+				}
 			}
 			n++
 			if N > 0 && n >= N {
