@@ -163,6 +163,7 @@ func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 			chromedp.NoFirstRun,
 			chromedp.NoDefaultBrowserCheck,
 			chromedp.UserDataDir(s.profileDir),
+			chromedp.Flag("headless", true),
 			chromedp.Flag("enable-automation", true),
 			chromedp.Flag("disable-web-security", true),
 			chromedp.Flag("allow-running-insecure-content", true),
